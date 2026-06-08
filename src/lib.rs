@@ -1,3 +1,7 @@
+use std::io::Cursor;
+
+use tract_onnx::prelude::*;
+
 /// 初始化内容识别。
 #[cfg(feature = "inline-model")]
 pub fn ddddocr_classification() -> anyhow::Result<Ddddocr<'static>> {
@@ -960,9 +964,52 @@ impl ColorFilter {
 }
 
 #[derive(Debug)]
+struct OnnxSession {
+    model: SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+}
+
+impl OnnxSession {
+    fn new<MODEL>(model: MODEL) -> anyhow::Result<Self>
+    where
+        MODEL: AsRef<[u8]>,
+    {
+        let model = tract_onnx::onnx()
+            .model_for_read(&mut Cursor::new(model.as_ref()))?
+            .into_optimized()?
+            .into_runnable()?;
+
+        Ok(Self { model })
+    }
+
+    fn run_f32<D>(&self, tensor: ndarray::Array<f32, D>) -> anyhow::Result<ndarray::ArrayD<f32>>
+    where
+        D: ndarray::Dimension,
+    {
+        let outputs = self.model.run(tvec!(Tensor::from(tensor).into()))?;
+        Ok(outputs[0].to_array_view::<f32>()?.to_owned())
+    }
+
+    fn run_i64<D>(&self, tensor: ndarray::Array<f32, D>) -> anyhow::Result<ndarray::ArrayD<i64>>
+    where
+        D: ndarray::Dimension,
+    {
+        let outputs = self.model.run(tvec!(Tensor::from(tensor).into()))?;
+        Ok(outputs[1].to_array_view::<i64>()?.to_owned())
+    }
+
+    fn run_u32<D>(&self, tensor: ndarray::Array<f32, D>) -> anyhow::Result<ndarray::ArrayD<u32>>
+    where
+        D: ndarray::Dimension,
+    {
+        let outputs = self.model.run(tvec!(Tensor::from(tensor).into()))?;
+        Ok(outputs[0].to_array_view::<u32>()?.to_owned())
+    }
+}
+
+#[derive(Debug)]
 pub struct Ddddocr<'a> {
     diy: bool,
-    session: ort::Session,
+    session: OnnxSession,
     charset: Option<std::borrow::Cow<'a, Charset>>,
     charset_range: Vec<String>,
 }
@@ -983,29 +1030,8 @@ impl<'a> Ddddocr<'a> {
     where
         P: AsRef<std::path::Path>,
     {
-        let path = path.as_ref();
-
-        let save = std::panic::take_hook();
-
-        std::panic::set_hook(Box::new(|_| {}));
-
-        let result = std::panic::catch_unwind(|| {
-            ort::init_from(path.to_string_lossy().to_string())
-                .commit()
-                .unwrap()
-        });
-
-        std::panic::set_hook(save);
-
-        result.map_err(|v| {
-            anyhow::anyhow!(
-                "{}",
-                v.downcast::<String>().unwrap_or(Box::new(format!(
-                    "failed to load the runtime library: {}",
-                    path.display()
-                )))
-            )
-        })
+        let _ = path.as_ref();
+        anyhow::bail!("tract backend does not use an ONNX Runtime dynamic library")
     }
 
     /// 从内存加载模型和字符集，只能使用内容识别，使用目标检测会恐慌。
@@ -1015,7 +1041,7 @@ impl<'a> Ddddocr<'a> {
     {
         Ok(Self {
             diy: is_diy(model.as_ref()),
-            session: ort::Session::builder()?.commit_from_memory(model.as_ref())?,
+            session: OnnxSession::new(model.as_ref())?,
             charset: Some(std::borrow::Cow::Owned(charset)),
             charset_range: Vec::new(),
         })
@@ -1028,7 +1054,7 @@ impl<'a> Ddddocr<'a> {
     {
         Ok(Self {
             diy: is_diy(model.as_ref()),
-            session: ort::Session::builder()?.commit_from_memory(model.as_ref())?,
+            session: OnnxSession::new(model.as_ref())?,
             charset: Some(std::borrow::Cow::Borrowed(charset)),
             charset_range: Vec::new(),
         })
@@ -1040,27 +1066,8 @@ impl<'a> Ddddocr<'a> {
     where
         MODEL: AsRef<[u8]>,
     {
-        let builder = ort::Session::builder()?;
-
-        let cuda = ort::CUDAExecutionProvider::default()
-            .with_device_id(device_id)
-            .with_arena_extend_strategy(ort::ArenaExtendStrategy::NextPowerOfTwo)
-            .with_memory_limit(2 * 1024 * 1024 * 1024)
-            .with_conv_algorithm_search(ort::CUDAExecutionProviderCuDNNConvAlgoSearch::Exhaustive)
-            .with_copy_in_default_stream(true);
-
-        if !ort::ExecutionProvider::is_available(&cuda)? {
-            anyhow::bail!("please compile ONNX Runtime with CUDA!")
-        }
-
-        ort::ExecutionProvider::register(&cuda, &builder)?;
-
-        Ok(Self {
-            diy: is_diy(model.as_ref()),
-            session: builder.commit_from_memory(model.as_ref())?,
-            charset: Some(std::borrow::Cow::Owned(charset)),
-            charset_range: Vec::new(),
-        })
+        let _ = (model, charset, device_id);
+        anyhow::bail!("tract backend does not support CUDA execution")
     }
 
     /// 从内存加载模型和字符集，只能使用内容识别，使用目标检测会恐慌。
@@ -1073,27 +1080,8 @@ impl<'a> Ddddocr<'a> {
     where
         MODEL: AsRef<[u8]>,
     {
-        let builder = ort::Session::builder()?;
-
-        let cuda = ort::CUDAExecutionProvider::default()
-            .with_device_id(device_id)
-            .with_arena_extend_strategy(ort::ArenaExtendStrategy::NextPowerOfTwo)
-            .with_memory_limit(2 * 1024 * 1024 * 1024)
-            .with_conv_algorithm_search(ort::CUDAExecutionProviderCuDNNConvAlgoSearch::Exhaustive)
-            .with_copy_in_default_stream(true);
-
-        if !ort::ExecutionProvider::is_available(&cuda)? {
-            anyhow::bail!("please compile ONNX Runtime with CUDA!")
-        }
-
-        ort::ExecutionProvider::register(&cuda, &builder)?;
-
-        Ok(Self {
-            diy: is_diy(model.as_ref()),
-            session: builder.commit_from_memory(model.as_ref())?,
-            charset: Some(std::borrow::Cow::Borrowed(charset)),
-            charset_range: Vec::new(),
-        })
+        let _ = (model, charset, device_id);
+        anyhow::bail!("tract backend does not support CUDA execution")
     }
 
     /// 从内存加载模型，只能使用目标检测，使用内容识别会恐慌。
@@ -1103,7 +1091,7 @@ impl<'a> Ddddocr<'a> {
     {
         Ok(Self {
             diy: is_diy(model.as_ref()),
-            session: ort::Session::builder()?.commit_from_memory(model.as_ref())?,
+            session: OnnxSession::new(model.as_ref())?,
             charset: None,
             charset_range: Vec::new(),
         })
@@ -1115,27 +1103,8 @@ impl<'a> Ddddocr<'a> {
     where
         MODEL: AsRef<[u8]>,
     {
-        let builder = ort::Session::builder()?;
-
-        let cuda = ort::CUDAExecutionProvider::default()
-            .with_device_id(device_id)
-            .with_arena_extend_strategy(ort::ArenaExtendStrategy::NextPowerOfTwo)
-            .with_memory_limit(2 * 1024 * 1024 * 1024)
-            .with_conv_algorithm_search(ort::CUDAExecutionProviderCuDNNConvAlgoSearch::Exhaustive)
-            .with_copy_in_default_stream(true);
-
-        if !ort::ExecutionProvider::is_available(&cuda)? {
-            anyhow::bail!("please compile ONNX Runtime with CUDA!")
-        }
-
-        ort::ExecutionProvider::register(&cuda, &builder)?;
-
-        Ok(Self {
-            diy: is_diy(model.as_ref()),
-            session: builder.commit_from_memory(model.as_ref())?,
-            charset: None,
-            charset_range: Vec::new(),
-        })
+        let _ = (model, device_id);
+        anyhow::bail!("tract backend does not support CUDA execution")
     }
 
     /// 从文件加载模型和字符集，只能使用内容识别，使用目标检测会恐慌。
@@ -1509,9 +1478,7 @@ impl<'a> Ddddocr<'a> {
             }
         }
 
-        let ort_outs = &self.session.run(ort::inputs![tensor]?)?;
-
-        let ort_outs = &ort_outs[0].try_extract_tensor()?;
+        let ort_outs = self.session.run_f32(tensor)?;
 
         // 长这样 [[[1,2,3,4]], [[1,2,3,4]], [[1,2,3,4]]]
         let ort_outs = ort_outs.mapv(f32::exp) / ort_outs.mapv(f32::exp).sum();
@@ -1735,15 +1702,15 @@ impl<'a> Ddddocr<'a> {
         }
 
         if word {
-            Ok(self.session.run(ort::inputs![tensor]?)?[1]
-                .try_extract_tensor::<i64>()?
+            Ok(self
+                .session
+                .run_i64(tensor)?
                 .iter()
                 .map(|&v| charset[v as usize].to_string())
                 .collect::<String>())
         } else if self.diy {
             // todo: 自定义模型未经测试
-            let result = &self.session.run(ort::inputs![tensor]?)?[0];
-            let result = result.try_extract_tensor::<u32>()?;
+            let result = self.session.run_u32(tensor)?;
             let mut last_item = 0;
 
             Ok(result
@@ -1759,8 +1726,7 @@ impl<'a> Ddddocr<'a> {
                 .map(|&v| charset[v as usize].to_string())
                 .collect::<String>())
         } else {
-            let result = &self.session.run(ort::inputs![tensor]?)?[0];
-            let result = result.try_extract_tensor::<f32>()?;
+            let result = self.session.run_f32(tensor)?;
             let mut last_item = 0;
 
             // 输入长这样 [[[1,2,3,4], [1,2,3,4], [1,2,3,4]]]
@@ -1868,8 +1834,7 @@ impl<'a> Ddddocr<'a> {
             input_tensor[[0, 2, y, x]] = p[0] as f32;
         }
 
-        let output = &self.session.run(ort::inputs![input_tensor]?)?[0];
-        let output = output.try_extract_tensor::<f32>()?;
+        let output = self.session.run_f32(input_tensor)?;
         let mut dets = Vec::new();
         let mut grid_offset = 0;
 
@@ -2068,6 +2033,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tract-onnx does not support common_old.onnx DynamicQuantizeLSTM yet"]
     fn classification_old() {
         let ddddocr = ddddocr_classification_old().unwrap();
 

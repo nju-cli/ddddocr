@@ -4,28 +4,24 @@ version = "1.0.0"
 edition = "2021"
 
 [features]
-default = ["inline-model", "download-binaries"]
+default = ["inline-model"]
 
 # 编译 main 的时候，是否内联模型
 inline-model = []
 
-# cuda 支持
-cuda = ["ort/cuda"]
+# 保留旧 feature 名称用于兼容，tract 后端不再支持 CUDA/动态 ONNX Runtime。
+cuda = []
 
-# 动态链接
-load-dynamic = ["ort/load-dynamic"]
+# 保留旧 feature 名称用于兼容，tract 后端不再需要动态运行库。
+load-dynamic = []
 
-# 自动下载动态链接或静态库，取决于 load-dynamic
-download-binaries = ["ort/download-binaries"]
+# 保留旧 feature 名称用于兼容，tract 后端不再下载 ONNX Runtime。
+download-binaries = []
 
 [dependencies]
-# 推理与数值计算，删除 Windows DML 以增加兼容性
-ort = { git = "https://github.com/86maid/ort.git", default-features = false, features = [
-  "ndarray",
-  "half",
-  "copy-dylibs",
-] }
-ndarray = "0.15"
+# 推理与数值计算，使用纯 Rust ONNX 后端，避免 onnxruntime/onnx-sys。
+tract-onnx = "0.21.15"
+ndarray = "0.16"
 
 # 静态变量
 lazy_static = "1.5.0"
